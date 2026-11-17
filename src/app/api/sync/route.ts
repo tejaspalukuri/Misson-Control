@@ -1,68 +1,8 @@
 import { NextResponse } from 'next/server';
 import ical from 'node-ical';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
-import { DEMO_USER_ID, getRelativeDate, getTodayTime } from '@/lib/mockData';
+import { DEMO_USER_ID } from '@/lib/mockData';
 import { Task, CalendarEvent } from '@/types';
-
-// Sample fallback ICS feed in RFC 5545 format for Canvas assignments & Google Calendar
-function generateSampleIcsData(): { sampleCanvasIcs: string; sampleCalendarIcs: string } {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-
-  const dayAfter = new Date();
-  dayAfter.setDate(dayAfter.getDate() + 2);
-  const dayAfterStr = dayAfter.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-
-  const todayStart = new Date();
-  todayStart.setHours(13, 0, 0, 0);
-  const todayStartStr = todayStart.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-
-  const todayEnd = new Date();
-  todayEnd.setHours(14, 15, 0, 0);
-  const todayEndStr = todayEnd.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-
-  const sampleCanvasIcs = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Canvas LMS//EN
-CALSCALE:GREGORIAN
-BEGIN:VEVENT
-UID:canvas-assignment-ee3302-quiz
-DTSTAMP:${tomorrowStr}
-DTSTART:${tomorrowStr}
-DTEND:${tomorrowStr}
-SUMMARY:EE 3302: Signals & Systems Weekly Quiz 4
-DESCRIPTION:Submit via Canvas before the deadline. Topics include Fourier transforms and convolution.
-STATUS:CONFIRMED
-END:VEVENT
-BEGIN:VEVENT
-UID:canvas-assignment-cs2340-milestone
-DTSTAMP:${dayAfterStr}
-DTSTART:${dayAfterStr}
-DTEND:${dayAfterStr}
-SUMMARY:CS 2340: Computer Architecture Assembly Project 2
-DESCRIPTION:Submit RISC-V simulator pipeline hazards analysis.
-STATUS:CONFIRMED
-END:VEVENT
-END:VCALENDAR`;
-
-  const sampleCalendarIcs = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Google Inc//Google Calendar 70.9054//EN
-CALSCALE:GREGORIAN
-BEGIN:VEVENT
-UID:gcal-event-study-group-today
-DTSTAMP:${todayStartStr}
-DTSTART:${todayStartStr}
-DTEND:${todayEndStr}
-SUMMARY:Algorithm Study Group (Library Room 3.204)
-DESCRIPTION:Review Dynamic Programming & Dijkstra's Algorithm
-STATUS:CONFIRMED
-END:VEVENT
-END:VCALENDAR`;
-
-  return { sampleCanvasIcs, sampleCalendarIcs };
-}
 
 export async function GET(request: Request) {
   return handleSync(request);
@@ -72,120 +12,242 @@ export async function POST(request: Request) {
   return handleSync(request);
 }
 
+async function syncFromCanvasApi(baseUrl: string, token: string): Promise<Task[]> {
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/json',
+  };
+
+  // 1. Fetch active courses
+  const coursesRes = await fetch(
+    `${cleanBase}/api/v1/courses?enrollment_state=active&per_page=50`,
+    { headers }
+  );
+  if (!coursesRes.ok) {
+    throw new Error(`Canvas API courses error: ${coursesRes.status} ${coursesRes.statusText}`);
+  }
+  const courses: Array<{ id: number; name: string; course_code: string }> = await coursesRes.json();
+
+  const importedTasks: Task[] = [];
+
+  // 2. For each active course, fetch upcoming/unsubmitted assignments with submission status
+  await Promise.all(
+    courses.map(async (course) => {
+      try {
+        const assignRes = await fetch(
+          `${cleanBase}/api/v1/courses/${course.id}/assignments?bucket=upcoming&include[]=submission&per_page=50`,
+          { headers }
+        );
+        if (!assignRes.ok) return;
+        const assignments: Array<{
+          id: number;
+          name: string;
+          due_at: string | null;
+          html_url: string;
+          submission?: {
+            workflow_state: string; // 'unsubmitted' | 'submitted' | 'graded' | 'pending_review'
+            submitted_at: string | null;
+          };
+        }> = await assignRes.json();
+
+        for (const a of assignments) {
+          const isSubmitted =
+            a.submission?.workflow_state === 'submitted' ||
+            a.submission?.workflow_state === 'graded' ||
+            a.submission?.workflow_state === 'pending_review' ||
+            Boolean(a.submission?.submitted_at);
+
+          // Skip assignments that are already submitted!
+          if (isSubmitted) continue;
+
+          importedTasks.push({
+            id: `canvas-api-${a.id}`,
+            user_id: DEMO_USER_ID,
+            title: a.name,
+            category: 'course',
+            context_tag: course.course_code || course.name || 'Course',
+            status: 'not_started',
+            progress_percent: 0,
+            due_date: a.due_at,
+            external_id: `canvas-api-${a.id}`,
+            subtasks: [
+              {
+                id: `st-${a.id}-1`,
+                task_id: `canvas-api-${a.id}`,
+                title: 'Review assignment prompt on Canvas',
+                is_completed: false,
+              },
+              {
+                id: `st-${a.id}-2`,
+                task_id: `canvas-api-${a.id}`,
+                title: 'Complete and submit',
+                is_completed: false,
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        console.warn(`Failed to fetch assignments for course ${course.id}:`, err);
+      }
+    })
+  );
+
+  return importedTasks;
+}
+
 async function handleSync(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const forceDemo = searchParams.get('demo') === 'true';
-
+    const canvasBaseUrl = process.env.CANVAS_BASE_URL || 'https://elearning.utdallas.edu';
+    const canvasApiToken = process.env.CANVAS_API_TOKEN;
     const canvasIcsUrl = process.env.CANVAS_ICS_URL;
     const calendarIcsUrl = process.env.CALENDAR_ICS_URL;
 
-    const tasksToUpsert: Partial<Task>[] = [];
-    const eventsToUpsert: Partial<CalendarEvent>[] = [];
+    let tasksToUpsert: Task[] = [];
+    const eventsToUpsert: CalendarEvent[] = [];
+    let sourceUsed = 'none';
 
-    // 1. Process Canvas ICS Feed
-    let canvasData: Record<string, ical.CalendarComponent> | null = null;
-    if (canvasIcsUrl && !forceDemo) {
-      try {
-        canvasData = await ical.async.fromURL(canvasIcsUrl);
-      } catch (err) {
-        console.warn('Failed to fetch Canvas ICS from URL, falling back to sample:', err);
+    // Prefer Canvas REST API if token is provided (knows submission status!)
+    if (canvasApiToken) {
+      tasksToUpsert = await syncFromCanvasApi(canvasBaseUrl, canvasApiToken);
+      sourceUsed = 'canvas_api';
+    } else if (canvasIcsUrl) {
+      // Fallback to ICS if no API token
+      const canvasData = await ical.async.fromURL(canvasIcsUrl);
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      for (const key in canvasData) {
+        const item = canvasData[key];
+        if (item.type === 'VEVENT') {
+          const uid = item.uid || `canvas-${key}`;
+          const summary = item.summary || 'Untitled Canvas Assignment';
+          const dueDate = item.end
+            ? new Date(item.end).toISOString()
+            : item.start
+            ? new Date(item.start).toISOString()
+            : null;
+
+          if (dueDate && new Date(dueDate) < startOfToday) continue;
+
+          const bracketMatch = summary.match(/\[([A-Za-z0-9\s.-]+)\]/);
+          let contextTag = 'Academic';
+          if (bracketMatch) {
+            contextTag = bracketMatch[1].replace(/\s*-\s*[A-Z0-9]+$/i, '').trim();
+          } else {
+            const match = summary.match(/^([A-Za-z]+\s*\d+)/);
+            if (match) contextTag = match[1].trim();
+          }
+
+          const cleanTitle = summary.replace(/\s*\[[A-Za-z0-9\s.-]+\]\s*$/, '').trim();
+
+          tasksToUpsert.push({
+            id: `task-${uid}`,
+            user_id: DEMO_USER_ID,
+            title: cleanTitle || summary,
+            category: 'course',
+            context_tag: contextTag,
+            status: 'not_started',
+            progress_percent: 0,
+            due_date: dueDate,
+            external_id: uid,
+            subtasks: [],
+            created_at: new Date().toISOString(),
+          });
+        }
       }
+      sourceUsed = 'canvas_ics';
     }
 
-    if (!canvasData) {
-      const { sampleCanvasIcs } = generateSampleIcsData();
-      canvasData = ical.sync.parseICS(sampleCanvasIcs);
+    // Process Calendar ICS Feeds (supports comma-separated URLs in CALENDAR_ICS_URL + dedicated category URLs)
+    const calendarFeeds: string[] = [];
+    if (calendarIcsUrl) {
+      calendarIcsUrl
+        .split(',')
+        .map((u) => u.trim())
+        .filter(Boolean)
+        .forEach((u) => calendarFeeds.push(u));
+    }
+    if (process.env.CALENDAR_SCHOOL_ICS_URL) calendarFeeds.push(process.env.CALENDAR_SCHOOL_ICS_URL.trim());
+    if (process.env.CALENDAR_CLUBS_ICS_URL) calendarFeeds.push(process.env.CALENDAR_CLUBS_ICS_URL.trim());
+    if (process.env.CALENDAR_PERSONAL_ICS_URL) calendarFeeds.push(process.env.CALENDAR_PERSONAL_ICS_URL.trim());
+
+    if (calendarFeeds.length > 0) {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const twoWeeksOut = new Date();
+      twoWeeksOut.setDate(twoWeeksOut.getDate() + 14);
+
+      await Promise.all(
+        calendarFeeds.map(async (feedUrl) => {
+          try {
+            const calData = await ical.async.fromURL(feedUrl);
+            for (const key in calData) {
+              const item = calData[key];
+              if (item.type === 'VEVENT') {
+                const start = item.start ? new Date(item.start) : new Date();
+                const end = item.end ? new Date(item.end) : new Date(start.getTime() + 3600000);
+
+                // Only keep events from today through the next 14 days
+                if (end < startOfToday || start > twoWeeksOut) continue;
+
+                // Skip all-day / midnight-only deadline items so only real timed events appear in Agenda
+                const isDateOnly = (item.start as any)?.dateOnly === true || item.datetype === 'date';
+                const isZeroDurationMidnight =
+                  start.getTime() === end.getTime() &&
+                  start.getHours() === 0 &&
+                  start.getMinutes() === 0;
+                if (isDateOnly || isZeroDurationMidnight) continue;
+
+                const uid = item.uid || `gcal-${key}`;
+                eventsToUpsert.push({
+                  id: `ev-${uid}`,
+                  user_id: DEMO_USER_ID,
+                  title: item.summary || 'Untitled Calendar Event',
+                  start_time: start.toISOString(),
+                  end_time: end.toISOString(),
+                  external_id: uid,
+                  created_at: new Date().toISOString(),
+                });
+              }
+            }
+          } catch (err) {
+            console.warn(`Calendar ICS fetch failed for ${feedUrl}:`, err);
+          }
+        })
+      );
     }
 
-    // Parse Canvas items -> tasks
-    for (const key in canvasData) {
-      const item = canvasData[key];
-      if (item.type === 'VEVENT') {
-        const uid = item.uid || `canvas-${key}`;
-        const summary = item.summary || 'Untitled Canvas Assignment';
-        
-        // Extract context_tag if in summary (e.g. "CS 1337: ...")
-        const match = summary.match(/^([A-Za-z]+\s*\d+)/);
-        const contextTag = match ? match[1].trim() : 'Academic';
-
-        const dueDate = item.end ? new Date(item.end).toISOString() : (item.start ? new Date(item.start).toISOString() : null);
-
-        tasksToUpsert.push({
-          user_id: DEMO_USER_ID,
-          title: summary,
-          category: 'course',
-          context_tag: contextTag,
-          status: 'not_started',
-          progress_percent: 0,
-          due_date: dueDate,
-          external_id: uid,
-        });
-      }
-    }
-
-    // 2. Process Calendar ICS Feed
-    let calData: Record<string, ical.CalendarComponent> | null = null;
-    if (calendarIcsUrl && !forceDemo) {
-      try {
-        calData = await ical.async.fromURL(calendarIcsUrl);
-      } catch (err) {
-        console.warn('Failed to fetch Calendar ICS from URL, falling back to sample:', err);
-      }
-    }
-
-    if (!calData) {
-      const { sampleCalendarIcs } = generateSampleIcsData();
-      calData = ical.sync.parseICS(sampleCalendarIcs);
-    }
-
-    // Parse Calendar items -> calendar_events
-    for (const key in calData) {
-      const item = calData[key];
-      if (item.type === 'VEVENT') {
-        const uid = item.uid || `gcal-${key}`;
-        const summary = item.summary || 'Untitled Calendar Event';
-        const start = item.start ? new Date(item.start).toISOString() : new Date().toISOString();
-        const end = item.end ? new Date(item.end).toISOString() : new Date(Date.now() + 3600000).toISOString();
-
-        eventsToUpsert.push({
-          user_id: DEMO_USER_ID,
-          title: summary,
-          start_time: start,
-          end_time: end,
-          external_id: uid,
-        });
-      }
-    }
-
-    // 3. Upsert to Supabase if configured
+    // Upsert to Supabase if configured
     let dbSynced = false;
-    if (isSupabaseConfigured && supabase) {
+    if (isSupabaseConfigured && supabase && tasksToUpsert.length > 0) {
       try {
-        if (tasksToUpsert.length > 0) {
-          const { error: taskErr } = await supabase
-            .from('tasks')
-            .upsert(tasksToUpsert, { onConflict: 'external_id' });
-          if (taskErr) console.warn('Supabase tasks upsert warning:', taskErr);
-        }
-
-        if (eventsToUpsert.length > 0) {
-          const { error: eventErr } = await supabase
-            .from('calendar_events')
-            .upsert(eventsToUpsert, { onConflict: 'external_id' });
-          if (eventErr) console.warn('Supabase events upsert warning:', eventErr);
-        }
-        dbSynced = true;
+        const dbTasks = tasksToUpsert.map((t) => ({
+          title: t.title,
+          category: t.category,
+          context_tag: t.context_tag,
+          status: t.status,
+          progress_percent: t.progress_percent,
+          due_date: t.due_date,
+          external_id: t.external_id,
+        }));
+        const { error } = await supabase
+          .from('tasks')
+          .upsert(dbTasks, { onConflict: 'external_id' });
+        if (!error) dbSynced = true;
       } catch (err) {
-        console.warn('Supabase sync execution error:', err);
+        console.warn('Supabase sync error:', err);
       }
     }
 
     return NextResponse.json({
       success: true,
-      message: dbSynced
-        ? 'Successfully synced and upserted ICS feeds into Supabase'
-        : 'Parsed ICS feeds successfully (Mock/Local mode active)',
+      sourceUsed,
+      message:
+        sourceUsed === 'canvas_api'
+          ? `Synced ${tasksToUpsert.length} unsubmitted upcoming assignments via Canvas API.`
+          : `Synced ${tasksToUpsert.length} upcoming assignments via ICS.`,
       dbSynced,
       tasksImported: tasksToUpsert.length,
       eventsImported: eventsToUpsert.length,
@@ -194,7 +256,7 @@ async function handleSync(request: Request) {
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error('ICS sync error:', error);
+    console.error('Sync error:', error);
     return NextResponse.json(
       {
         success: false,

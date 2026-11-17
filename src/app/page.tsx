@@ -11,6 +11,7 @@ import {
   updateTaskStatus,
   deleteTask,
   resetToDemoData,
+  mergeImportedData,
 } from '@/lib/storage';
 import { Header } from '@/components/Header';
 import { TaskSummarizer } from '@/components/TaskSummarizer';
@@ -91,16 +92,25 @@ export default function DashboardPage() {
 
   const handleSync = async () => {
     setIsSyncing(true);
-    setSyncNotice(null);
+    setSyncNotice('Connecting to Canvas & Calendar feeds...');
     try {
-      const res = await fetch('/api/sync?demo=true', { method: 'POST' });
+      // Call live sync route
+      const res = await fetch('/api/sync', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        setSyncNotice(
-          `Sync Complete: ${data.tasksImported} assignments and ${data.eventsImported} calendar events processed.`
-        );
-        // Refresh data
-        await loadData();
+        if (data.tasks && data.tasks.length > 0) {
+          const { tasks: mergedTasks, events: mergedEvents } = mergeImportedData(
+            data.tasks,
+            data.events || []
+          );
+          setTasks(mergedTasks);
+          setEvents(mergedEvents);
+          setSyncNotice(
+            `Sync Complete: Successfully imported ${data.tasksImported} Canvas assignments & ${data.eventsImported} events!`
+          );
+        } else {
+          setSyncNotice('Sync Complete: Feeds checked, no new items.');
+        }
       } else {
         setSyncNotice(`Sync issue: ${data.error || 'Check server logs'}`);
       }
@@ -108,7 +118,7 @@ export default function DashboardPage() {
       setSyncNotice(`Sync failed: ${err?.message || 'Network error'}`);
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setSyncNotice(null), 6000);
+      setTimeout(() => setSyncNotice(null), 8000);
     }
   };
 
@@ -123,7 +133,7 @@ export default function DashboardPage() {
   const urgentAcademicCount = tasks.filter((t) => {
     if (t.status === 'completed' || t.category !== 'course' || !t.due_date) return false;
     const diffHours = (new Date(t.due_date).getTime() - Date.now()) / (1000 * 60 * 60);
-    return diffHours < 48;
+    return diffHours < 48 && diffHours > -24;
   }).length;
 
   const clubCount = tasks.filter((t) => t.category === 'club').length;
@@ -131,7 +141,7 @@ export default function DashboardPage() {
   const completedCount = tasks.filter((t) => t.status === 'completed').length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-gray-900 flex flex-col">
+    <div className="min-h-screen bg-[#f4f3ee] text-[#121c16] flex flex-col">
       <Header
         onSync={handleSync}
         isSyncing={isSyncing}
@@ -139,59 +149,18 @@ export default function DashboardPage() {
       />
 
       {syncNotice && (
-        <div className="bg-indigo-600 text-white text-xs py-2 px-4 text-center font-medium shadow-inner flex items-center justify-center gap-2">
-          <Sparkles className="h-3.5 w-3.5" />
-          <span>{syncNotice}</span>
+        <div className="border-b border-[#d8d5cc] bg-[#244c36] text-[#f4f3ee] font-mono text-xs py-2 px-6 text-center tracking-wide">
+          {syncNotice}
         </div>
       )}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Quick Metrics Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-              <span>Urgent (&lt;48h)</span>
-              <Flame className="h-4 w-4 text-rose-500" />
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{urgentAcademicCount}</div>
-            <p className="text-[11px] text-rose-600 font-medium mt-0.5">Academic deadlines</p>
-          </div>
-
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-              <span>Club Milestones</span>
-              <Clock className="h-4 w-4 text-purple-500" />
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{clubCount}</div>
-            <p className="text-[11px] text-purple-600 font-medium mt-0.5">Active projects</p>
-          </div>
-
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-              <span>Blocked Tasks</span>
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{blockedCount}</div>
-            <p className="text-[11px] text-amber-600 font-medium mt-0.5">Needing unblocking</p>
-          </div>
-
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-              <span>Schedule Today</span>
-              <CalendarIcon className="h-4 w-4 text-sky-500" />
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{events.length}</div>
-            <p className="text-[11px] text-sky-600 font-medium mt-0.5">Classes &amp; meetings</p>
-          </div>
-        </div>
-
-        {/* Feature 3: WebLLM Morning Briefing Component */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-6 sm:px-10 py-10 space-y-12">
+        {/* 00 / Briefing */}
         <TaskSummarizer tasks={tasks} events={events} />
 
-        {/* Main 2-Column Dashboard Layout (Left: Schedule / Right: Task Board) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left Column: Chronological Today's Agenda (4 cols on lg) */}
-          <div className="lg:col-span-5 space-y-6">
+        {/* 01 / Agenda & 02 / Tasks */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-start">
+          <div className="lg:col-span-5">
             <AgendaSchedule
               events={events}
               onTriggerSync={handleSync}
@@ -199,8 +168,7 @@ export default function DashboardPage() {
             />
           </div>
 
-          {/* Right Column: Unified Task Board (7 cols on lg) */}
-          <div className="lg:col-span-7 space-y-6">
+          <div className="lg:col-span-7">
             <TaskBoard
               tasks={tasks}
               onToggleSubtask={handleToggleSubtask}
@@ -213,15 +181,15 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* Modal Dialog for New Tasks */}
       <CreateTaskModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onCreateTask={handleCreateTask}
       />
 
-      <footer className="border-t border-gray-200 bg-white py-4 text-center text-xs text-gray-400">
-        Mission Control &bull; College Student Dashboard MVP &bull; Powered by Next.js, Supabase &amp; WebLLM
+      <footer className="border-t border-[#d8d5cc] py-6 px-6 sm:px-10 max-w-7xl w-full mx-auto flex justify-between font-mono text-[11px] uppercase tracking-wider text-[#737065]">
+        <span>Mission Control</span>
+        <span>UT Dallas</span>
       </footer>
     </div>
   );

@@ -1,22 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Task, Subtask, TaskStatus } from '@/types';
-import {
-  CheckSquare,
-  Square,
-  AlertTriangle,
-  Clock,
-  Plus,
-  Trash2,
-  Tag,
-  GraduationCap,
-  Users,
-  UserCheck,
-  ChevronDown,
-  ChevronRight,
-  Sparkles,
-} from 'lucide-react';
+import { Task, TaskStatus } from '@/types';
 
 interface TaskBoardProps {
   tasks: Task[];
@@ -35,12 +20,8 @@ export function TaskBoard({
   onDeleteTask,
   onOpenCreateModal,
 }: TaskBoardProps) {
-  const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({
-    't-1': true,
-    't-4': true,
-  });
+  const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [newSubtaskInput, setNewSubtaskInput] = useState<Record<string, string>>({});
-  const [activeTab, setActiveTab] = useState<'all' | 'urgent' | 'club' | 'personal'>('all');
 
   const toggleExpand = (id: string) => {
     setExpandedTasks((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -54,9 +35,7 @@ export function TaskBoard({
   };
 
   const isUrgentAcademic = (task: Task) => {
-    if (task.category !== 'course') return false;
-    if (task.status === 'completed') return false;
-    if (!task.due_date) return false;
+    if (task.category !== 'course' || task.status === 'completed' || !task.due_date) return false;
     const diffHours = (new Date(task.due_date).getTime() - Date.now()) / (1000 * 60 * 60);
     return diffHours < 48;
   };
@@ -65,101 +44,56 @@ export function TaskBoard({
   const clubTasks = tasks.filter((t) => t.category === 'club');
   const otherTasks = tasks.filter((t) => !isUrgentAcademic(t) && t.category !== 'club');
 
-  const getStatusBadge = (status: TaskStatus) => {
-    switch (status) {
-      case 'blocked':
-        return (
-          <span className="inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 border border-red-200">
-            <AlertTriangle className="h-3 w-3 text-red-500" /> BLOCKED
-          </span>
-        );
-      case 'in_progress':
-        return (
-          <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 border border-amber-200">
-            In Progress
-          </span>
-        );
-      case 'completed':
-        return (
-          <span className="inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 border border-emerald-200">
-            Completed
-          </span>
-        );
-      case 'not_started':
-      default:
-        return (
-          <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-            Not Started
-          </span>
-        );
-    }
-  };
-
   const formatDueDate = (dateStr: string | null) => {
     if (!dateStr) return null;
     const date = new Date(dateStr);
     const diffHours = (date.getTime() - Date.now()) / (1000 * 60 * 60);
 
-    if (diffHours < 0) {
-      return <span className="text-red-600 font-semibold">Overdue</span>;
-    }
-    if (diffHours < 24) {
-      return <span className="text-amber-600 font-medium">Due in {Math.round(diffHours)}h</span>;
-    }
-    if (diffHours < 48) {
-      return <span className="text-indigo-600 font-medium">Due Tomorrow</span>;
-    }
-    return (
-      <span className="text-gray-500">
-        Due {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-      </span>
-    );
+    if (diffHours < 0) return 'OVERDUE';
+    if (diffHours < 24) return `DUE IN ${Math.round(diffHours)}H`;
+    if (diffHours < 48) return 'DUE TOMORROW';
+    return `DUE ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()}`;
   };
 
-  const renderTaskCard = (task: Task) => {
+  const renderTaskRow = (task: Task) => {
     const isExpanded = expandedTasks[task.id] ?? false;
     const subtasks = task.subtasks || [];
     const completedCount = subtasks.filter((s) => s.is_completed).length;
     const totalCount = subtasks.length;
     const percent = task.progress_percent ?? 0;
+    const dueLabel = formatDueDate(task.due_date);
 
     return (
-      <div
-        key={task.id}
-        className={`rounded-xl border transition-all ${
-          task.status === 'blocked'
-            ? 'border-red-200 bg-red-50/20'
-            : task.status === 'completed'
-            ? 'border-gray-200 bg-gray-50/50 opacity-80'
-            : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm'
-        } p-4`}
-      >
-        <div className="flex items-start justify-between gap-3">
+      <div key={task.id} className="py-4 border-b border-[#d8d5cc] group">
+        <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-2 mb-1.5">
-              {task.context_tag && (
-                <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">
-                  <Tag className="h-3 w-3" /> {task.context_tag}
+            <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-[#737065] uppercase tracking-wider mb-1">
+              {task.context_tag && <span className="text-[#244c36] font-semibold">{task.context_tag}</span>}
+              {dueLabel && <span>{dueLabel}</span>}
+              {task.status === 'blocked' && <span className="text-[#9e3f24] font-semibold">BLOCKED</span>}
+              {totalCount > 0 && (
+                <span>
+                  {completedCount}/{totalCount} STEPS
                 </span>
               )}
-              {getStatusBadge(task.status)}
-              {formatDueDate(task.due_date)}
             </div>
 
             <h3
-              className={`text-sm font-semibold text-gray-900 leading-snug ${
-                task.status === 'completed' ? 'line-through text-gray-500' : ''
+              onClick={() => toggleExpand(task.id)}
+              className={`text-sm font-medium cursor-pointer hover:text-[#244c36] transition ${
+                task.status === 'completed' ? 'line-through text-[#737065]' : 'text-[#121c16]'
               }`}
             >
               {task.title}
             </h3>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-3 shrink-0">
+            <span className="font-mono text-xs text-[#737065]">{percent}%</span>
             <select
               value={task.status}
               onChange={(e) => onUpdateStatus(task.id, e.target.value as TaskStatus)}
-              className="text-xs rounded-md border border-gray-200 bg-white px-2 py-1 text-gray-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="font-mono text-[11px] uppercase bg-transparent border border-[#d8d5cc] px-2 py-1 text-[#121c16] focus:outline-none focus:border-[#121c16] cursor-pointer"
             >
               <option value="not_started">Not Started</option>
               <option value="in_progress">In Progress</option>
@@ -168,228 +102,128 @@ export function TaskBoard({
             </select>
             <button
               onClick={() => onDeleteTask(task.id)}
-              className="rounded p-1 text-gray-400 hover:text-red-500 transition-colors"
+              className="font-mono text-[11px] uppercase text-[#737065] hover:text-[#9e3f24] opacity-0 group-hover:opacity-100 transition cursor-pointer"
               title="Delete task"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              DEL
             </button>
           </div>
         </div>
 
-        {/* Progress Bar & Subtask Summary */}
-        <div className="mt-3">
-          <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5 font-medium">
-            <div className="flex items-center gap-1.5">
-              <span>Progress</span>
-              {totalCount > 0 && (
-                <span className="text-gray-400">
-                  ({completedCount}/{totalCount} subtasks)
-                </span>
-              )}
-            </div>
-            <span className="font-semibold text-gray-700 font-mono">{percent}%</span>
-          </div>
+        {/* Minimal 2px Progress Line */}
+        <div className="mt-2.5 h-[2px] w-full bg-[#e2dfd7]">
+          <div
+            className={`h-full transition-all duration-300 ${
+              task.status === 'blocked' ? 'bg-[#9e3f24]' : 'bg-[#244c36]'
+            }`}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
 
-          {/* Segmented / Smooth Progress Bar */}
-          {totalCount > 1 ? (
-            <div className="flex gap-1 h-2 w-full">
-              {subtasks.map((st, i) => (
-                <div
-                  key={st.id || i}
-                  className={`h-full flex-1 rounded-sm transition-all duration-300 ${
-                    st.is_completed
-                      ? 'bg-emerald-500'
-                      : task.status === 'blocked'
-                      ? 'bg-red-200'
-                      : 'bg-gray-200'
-                  }`}
+        {/* Subtasks */}
+        {isExpanded && (
+          <div className="mt-3 pl-4 border-l border-[#d8d5cc] space-y-2">
+            {subtasks.map((st) => (
+              <label
+                key={st.id}
+                className="flex items-center gap-2.5 text-xs cursor-pointer select-none text-[#2c352f]"
+              >
+                <input
+                  type="checkbox"
+                  checked={st.is_completed}
+                  onChange={() => onToggleSubtask(task.id, st.id)}
+                  className="accent-[#244c36] h-3.5 w-3.5 cursor-pointer"
                 />
-              ))}
-            </div>
-          ) : (
-            <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-              <div
-                className={`h-full transition-all duration-300 ${
-                  percent === 100
-                    ? 'bg-emerald-500'
-                    : task.status === 'blocked'
-                    ? 'bg-red-400'
-                    : 'bg-indigo-600'
-                }`}
-                style={{ width: `${percent}%` }}
+                <span className={st.is_completed ? 'line-through text-[#737065]' : ''}>
+                  {st.title}
+                </span>
+              </label>
+            ))}
+
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                placeholder="Add step (Enter)..."
+                value={newSubtaskInput[task.id] || ''}
+                onChange={(e) =>
+                  setNewSubtaskInput((prev) => ({ ...prev, [task.id]: e.target.value }))
+                }
+                onKeyDown={(e) => handleSubtaskKeyDown(task.id, e)}
+                className="flex-1 bg-transparent border-b border-[#d8d5cc] py-1 text-xs placeholder:text-[#9a968c] focus:border-[#121c16] focus:outline-none"
               />
             </div>
-          )}
-        </div>
-
-        {/* Subtasks Accordion Toggle */}
-        <div className="mt-3 pt-2.5 border-t border-gray-100">
-          <button
-            onClick={() => toggleExpand(task.id)}
-            className="flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-indigo-600 transition"
-          >
-            {isExpanded ? (
-              <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-gray-400" />
-            )}
-            <span>
-              {isExpanded ? 'Hide Subtasks' : `View Subtasks (${completedCount}/${totalCount})`}
-            </span>
-          </button>
-
-          {isExpanded && (
-            <div className="mt-2.5 space-y-2 pl-2">
-              {subtasks.map((st) => (
-                <div
-                  key={st.id}
-                  onClick={() => onToggleSubtask(task.id, st.id)}
-                  className="group flex items-start gap-2.5 text-xs cursor-pointer select-none py-0.5"
-                >
-                  <button
-                    type="button"
-                    className="mt-0.5 text-indigo-600 hover:text-indigo-800 transition"
-                  >
-                    {st.is_completed ? (
-                      <CheckSquare className="h-4 w-4 text-emerald-600" />
-                    ) : (
-                      <Square className="h-4 w-4 text-gray-400 group-hover:text-gray-600" />
-                    )}
-                  </button>
-                  <span
-                    className={`leading-relaxed ${
-                      st.is_completed
-                        ? 'text-gray-400 line-through'
-                        : 'text-gray-700 group-hover:text-gray-900'
-                    }`}
-                  >
-                    {st.title}
-                  </span>
-                </div>
-              ))}
-
-              {/* Quick Add Subtask Input */}
-              <div className="flex items-center gap-2 pt-1.5">
-                <input
-                  type="text"
-                  placeholder="Add a subtask (press Enter)..."
-                  value={newSubtaskInput[task.id] || ''}
-                  onChange={(e) =>
-                    setNewSubtaskInput((prev) => ({ ...prev, [task.id]: e.target.value }))
-                  }
-                  onKeyDown={(e) => handleSubtaskKeyDown(task.id, e)}
-                  className="flex-1 rounded-md border border-gray-200 px-2.5 py-1 text-xs placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (newSubtaskInput[task.id]?.trim()) {
-                      onAddSubtask(task.id, newSubtaskInput[task.id].trim());
-                      setNewSubtaskInput((prev) => ({ ...prev, [task.id]: '' }));
-                    }
-                  }}
-                  className="rounded-md bg-gray-100 p-1 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     );
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header and Quick Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <section className="space-y-10">
+      <div className="flex items-baseline justify-between border-b border-[#121c16] pb-3">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">Task & Project Board</h2>
-          <p className="text-xs text-gray-500">
-            Organized by urgency and extracurricular commitments
-          </p>
+          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[#737065]">
+            02 / Tasks
+          </span>
+          <h2 className="mt-1 text-2xl font-medium tracking-tight text-[#121c16]">
+            Deliverables
+          </h2>
         </div>
 
         <button
           onClick={onOpenCreateModal}
-          className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 transition"
+          className="font-mono text-xs uppercase tracking-wider text-[#121c16] border border-[#121c16] px-4 py-1.5 hover:bg-[#121c16] hover:text-[#f4f3ee] transition cursor-pointer"
         >
-          <Plus className="h-4 w-4" />
-          <span>New Task / Project</span>
+          + New Task
         </button>
       </div>
 
-      {/* Section 1: Urgent Academic Deadlines (<48h) */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-rose-100 text-rose-700">
-              <GraduationCap className="h-3.5 w-3.5" />
-            </div>
-            <h3 className="text-sm font-bold text-gray-900 tracking-tight">
-              Urgent Academic Deadlines (&lt; 48h)
-            </h3>
-            <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-100">
-              {urgentAcademicTasks.length}
-            </span>
-          </div>
+      {/* Urgent Academic */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-mono text-xs uppercase tracking-widest text-[#737065]">
+            Urgent Academic (&lt; 48h)
+          </h3>
+          <span className="font-mono text-xs text-[#737065]">{urgentAcademicTasks.length}</span>
         </div>
-
         {urgentAcademicTasks.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/50 p-4 text-center text-xs text-gray-500">
-            No academic assignments due in the next 48 hours. Great job staying ahead!
-          </div>
+          <p className="py-4 text-xs text-[#737065] border-b border-[#d8d5cc]">
+            No academic deadlines within 48 hours.
+          </p>
         ) : (
-          <div className="grid gap-3">{urgentAcademicTasks.map(renderTaskCard)}</div>
+          <div>{urgentAcademicTasks.map(renderTaskRow)}</div>
         )}
       </div>
 
-      {/* Section 2: Active Club Projects & Extracurriculars */}
-      <div className="space-y-3 pt-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-purple-100 text-purple-700">
-              <Users className="h-3.5 w-3.5" />
-            </div>
-            <h3 className="text-sm font-bold text-gray-900 tracking-tight">
-              Active Club Projects & Extracurriculars
-            </h3>
-            <span className="rounded-full bg-purple-50 px-2 py-0.5 text-[11px] font-semibold text-purple-700 border border-purple-100">
-              {clubTasks.length}
-            </span>
-          </div>
+      {/* Active Club Projects */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-mono text-xs uppercase tracking-widest text-[#737065]">
+            Club Projects
+          </h3>
+          <span className="font-mono text-xs text-[#737065]">{clubTasks.length}</span>
         </div>
-
         {clubTasks.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/50 p-4 text-center text-xs text-gray-500">
-            No club projects active. Add a club milestone to track subteam progress.
-          </div>
+          <p className="py-4 text-xs text-[#737065] border-b border-[#d8d5cc]">
+            No active club projects.
+          </p>
         ) : (
-          <div className="grid gap-3">{clubTasks.map(renderTaskCard)}</div>
+          <div>{clubTasks.map(renderTaskRow)}</div>
         )}
       </div>
 
-      {/* Section 3: Other Courses & Personal Priorities */}
+      {/* Other Courses & Personal */}
       {otherTasks.length > 0 && (
-        <div className="space-y-3 pt-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-100 text-blue-700">
-                <UserCheck className="h-3.5 w-3.5" />
-              </div>
-              <h3 className="text-sm font-bold text-gray-900 tracking-tight">
-                Other Courses & Personal Priorities
-              </h3>
-              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 border border-blue-100">
-                {otherTasks.length}
-              </span>
-            </div>
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-mono text-xs uppercase tracking-widest text-[#737065]">
+              Courses &amp; Personal
+            </h3>
+            <span className="font-mono text-xs text-[#737065]">{otherTasks.length}</span>
           </div>
-
-          <div className="grid gap-3">{otherTasks.map(renderTaskCard)}</div>
+          <div>{otherTasks.map(renderTaskRow)}</div>
         </div>
       )}
-    </div>
+    </section>
   );
 }

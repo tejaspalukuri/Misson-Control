@@ -6,7 +6,7 @@ const TASKS_STORAGE_KEY = 'mission_control_tasks_v1';
 const EVENTS_STORAGE_KEY = 'mission_control_events_v1';
 
 // In-browser LocalStorage helpers for Demo / Offline mode
-function getLocalTasks(): Task[] {
+export function getLocalTasks(): Task[] {
   if (typeof window === 'undefined') return INITIAL_TASKS;
   const raw = localStorage.getItem(TASKS_STORAGE_KEY);
   if (!raw) {
@@ -20,13 +20,13 @@ function getLocalTasks(): Task[] {
   }
 }
 
-function saveLocalTasks(tasks: Task[]) {
+export function saveLocalTasks(tasks: Task[]) {
   if (typeof window !== 'undefined') {
     localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
   }
 }
 
-function getLocalEvents(): CalendarEvent[] {
+export function getLocalEvents(): CalendarEvent[] {
   if (typeof window === 'undefined') return INITIAL_CALENDAR_EVENTS;
   const raw = localStorage.getItem(EVENTS_STORAGE_KEY);
   if (!raw) {
@@ -40,10 +40,77 @@ function getLocalEvents(): CalendarEvent[] {
   }
 }
 
-function saveLocalEvents(events: CalendarEvent[]) {
+export function saveLocalEvents(events: CalendarEvent[]) {
   if (typeof window !== 'undefined') {
     localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events));
   }
+}
+
+export function mergeImportedData(
+  importedTasks: Task[],
+  importedEvents: CalendarEvent[]
+): { tasks: Task[]; events: CalendarEvent[] } {
+  const demoTaskIds = new Set(INITIAL_TASKS.map((t) => t.id));
+  const demoEventIds = new Set(INITIAL_CALENDAR_EVENTS.map((e) => e.id));
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  // Filter out initial demo tasks/events AND any old past-due synced tasks
+  const currentTasks = getLocalTasks().filter(
+    (t) =>
+      !demoTaskIds.has(t.id) &&
+      !(t.external_id && t.due_date && new Date(t.due_date) < startOfToday)
+  );
+  const currentEvents = getLocalEvents().filter((e) => {
+    if (demoEventIds.has(e.id)) return false;
+    if (e.external_id?.startsWith('event-assignment-')) return false;
+    const s = new Date(e.start_time);
+    const end = new Date(e.end_time);
+    const isMidnightZero =
+      s.getTime() === end.getTime() && s.getHours() === 0 && s.getMinutes() === 0;
+    return !isMidnightZero;
+  });
+
+  // Map existing tasks by external_id
+  const taskMap = new Map<string, Task>();
+  currentTasks.forEach((t) => {
+    if (t.external_id) taskMap.set(t.external_id, t);
+    else taskMap.set(t.id, t);
+  });
+
+  importedTasks.forEach((newTask) => {
+    const key = newTask.external_id || newTask.id;
+    if (taskMap.has(key)) {
+      // Update due date and title, preserve user progress
+      const existing = taskMap.get(key)!;
+      existing.due_date = newTask.due_date;
+      existing.title = newTask.title;
+      existing.context_tag = newTask.context_tag;
+    } else {
+      taskMap.set(key, newTask);
+    }
+  });
+
+  const mergedTasks = Array.from(taskMap.values());
+  saveLocalTasks(mergedTasks);
+
+  // Map events by external_id
+  const eventMap = new Map<string, CalendarEvent>();
+  currentEvents.forEach((e) => {
+    if (e.external_id) eventMap.set(e.external_id, e);
+    else eventMap.set(e.id, e);
+  });
+
+  importedEvents.forEach((newEvent) => {
+    const key = newEvent.external_id || newEvent.id;
+    eventMap.set(key, newEvent);
+  });
+
+  const mergedEvents = Array.from(eventMap.values());
+  saveLocalEvents(mergedEvents);
+
+  return { tasks: mergedTasks, events: mergedEvents };
 }
 
 export async function getTasks(): Promise<Task[]> {
@@ -55,9 +122,11 @@ export async function getTasks(): Promise<Task[]> {
         .order('due_date', { ascending: true, nullsFirst: false });
 
       if (tasksError) throw tasksError;
-      if (tasksData) return tasksData as Task[];
+      if (tasksData && tasksData.length > 0) {
+        return tasksData as Task[];
+      }
     } catch (err) {
-      console.warn('Supabase fetch failed, falling back to local storage:', err);
+      console.warn('Supabase fetch failed or restricted by RLS, using local storage:', err);
     }
   }
   return getLocalTasks();
@@ -72,9 +141,11 @@ export async function getCalendarEvents(): Promise<CalendarEvent[]> {
         .order('start_time', { ascending: true });
 
       if (eventsError) throw eventsError;
-      if (eventsData) return eventsData as CalendarEvent[];
+      if (eventsData && eventsData.length > 0) {
+        return eventsData as CalendarEvent[];
+      }
     } catch (err) {
-      console.warn('Supabase fetch failed, falling back to local storage:', err);
+      console.warn('Supabase fetch failed or restricted by RLS, using local storage:', err);
     }
   }
   return getLocalEvents();
@@ -83,7 +154,6 @@ export async function getCalendarEvents(): Promise<CalendarEvent[]> {
 export async function toggleSubtask(taskId: string, subtaskId: string): Promise<Task[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      // 1. Fetch current subtask
       const { data: st } = await supabase
         .from('subtasks')
         .select('is_completed')
@@ -97,7 +167,6 @@ export async function toggleSubtask(taskId: string, subtaskId: string): Promise<
           .update({ is_completed: nextState })
           .eq('id', subtaskId);
 
-        // 2. Query all subtasks of this task to compute updated percentage
         const { data: allSts } = await supabase
           .from('subtasks')
           .select('is_completed')
@@ -237,15 +306,6 @@ export async function createTask(
 }
 
 export async function updateTaskStatus(taskId: string, status: Task['status']): Promise<Task[]> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('tasks').update({ status }).eq('id', taskId);
-      return getTasks();
-    } catch (err) {
-      console.warn('Supabase updateTaskStatus failed:', err);
-    }
-  }
-
   const tasks = getLocalTasks();
   const target = tasks.find((t) => t.id === taskId);
   if (target) {
@@ -253,9 +313,26 @@ export async function updateTaskStatus(taskId: string, status: Task['status']): 
     if (status === 'completed') {
       target.progress_percent = 100;
       target.subtasks?.forEach((s) => (s.is_completed = true));
+    } else if (status === 'in_progress' && target.progress_percent === 0) {
+      target.progress_percent = 50;
+    } else if (status === 'not_started') {
+      target.progress_percent = 0;
+      target.subtasks?.forEach((s) => (s.is_completed = false));
     }
     saveLocalTasks(tasks);
   }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase
+        .from('tasks')
+        .update({ status, progress_percent: target?.progress_percent ?? 0 })
+        .eq('id', taskId);
+    } catch (err) {
+      console.warn('Supabase updateTaskStatus failed:', err);
+    }
+  }
+
   return [...tasks];
 }
 
